@@ -1,0 +1,26 @@
+{
+    "name": "VRCSquish.Editor",
+    "rootNamespace": "VRCSquish.Editor",
+    "references": [
+        "VRCSquish.Runtime",
+        "Poiyomi.ModularShaderSystem",
+        "ThryAssemblyDefinition",
+        "com.vrcfury.api",
+        "VRC.SDK3A",
+        "VRC.SDKBase"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "VRCSDKBase.dll",
+        "VRCSDK3A.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

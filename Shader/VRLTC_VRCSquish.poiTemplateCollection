@@ -1,0 +1,494 @@
+#T#VRCSquishProperties
+//ifex _SquishEnabled==0
+[HideInInspector] m_start_VRCSquish ("Squish--{reference_property:_SquishEnabled}", Float) = 0
+[HideInInspector][ThryToggle(POI_SQUISH)] _SquishEnabled ("Enable", Float) = 0
+[HideInInspector] _VRCSquishVersion ("Version", Float) = 14
+[ToggleUI] _SquishOn ("Active", Float) = 1
+[NoScaleOffset] _SquishData ("Data", 2D) = "black" { }
+_SquishStrength ("Strength", Range(0, 1)) = 1
+_SquishMaxDepth ("Depth", Range(0, 0.2)) = 0.05
+_SquishSoftness ("Softness", Range(0.002, 0.15)) = 0.03
+_SquishBulge ("Bulge", Range(0, 1)) = 0.25
+_SquishNormals ("Normals", Range(0, 1)) = 1
+_SquishContactThreshold ("Threshold", Range(-0.02, 0.02)) = 0.002
+
+[HideInInspector] s_start_SquishTess ("Tessellation--{persistent_expand:true,default_expand:true}", Float) = 1
+_SquishTessMax ("Factor", Range(1, 32)) = 12
+_SquishTessEdge ("Edge", Range(0.001, 0.05)) = 0.006
+_SquishTessReach ("Reach", Range(0, 0.2)) = 0.03
+_SquishTessPhong ("Smoothing", Range(0, 1)) = 0.5
+[HideInInspector] s_end_SquishTess ("Tessellation", Float) = 0
+
+[HideInInspector] s_start_SquishLive ("Baked--{persistent_expand:true,default_expand:false}", Float) = 0
+_SquishScale ("Scale", Float) = 1
+[ToggleUI] _SquishFlipY ("Flip", Float) = 0
+[NoScaleOffset] _SquishDepth ("Atlas", 2D) = "black" { }
+_SquishTiles ("Tiles", Float) = 1
+_SquishCam0 ("Camera0", Vector) = (0, 0, 0, 0)
+_SquishCam1 ("Camera1", Vector) = (0, 0, 0, 0)
+_SquishCam2 ("Camera2", Vector) = (0, 0, 0, 0)
+_SquishCam3 ("Camera3", Vector) = (0, 0, 0, 0)
+[HideInInspector] s_end_SquishLive ("Baked", Float) = 0
+[HideInInspector] m_end_VRCSquish ("Squish", Float) = 0
+//endex
+
+#T#VRCSquishKeywords
+//ifex _SquishEnabled==0
+#pragma shader_feature_local POI_SQUISH
+//endex
+
+#T#VRCSquishVariables
+//ifex _SquishEnabled==0
+#ifdef POI_SQUISH
+	#if defined(PROP_SQUISHDATA) || !defined(OPTIMIZER_ENABLED)
+		Texture2D<float4> _SquishData;
+	#endif
+	float4 _SquishData_TexelSize;
+	Texture2D _SquishDepth;
+	float4 _SquishDepth_TexelSize;
+	SamplerState vrcsquish_linear_clamp_sampler;
+	float _SquishOn;
+	float _SquishStrength;
+	float _SquishMaxDepth;
+	float _SquishSoftness;
+	float _SquishBulge;
+	float _SquishNormals;
+	float _SquishContactThreshold;
+	float _SquishTessMax;
+	float _SquishTessEdge;
+	float _SquishTessReach;
+	float _SquishTessPhong;
+	float _SquishScale;
+	float _SquishFlipY;
+	float _SquishTiles;
+	float4 _SquishCam0;
+	float4 _SquishCam1;
+	float4 _SquishCam2;
+	float4 _SquishCam3;
+#endif
+//endex
+
+#T#VRCSquishFunctions
+//ifex _SquishEnabled==0
+#if defined(POI_SQUISH) && (defined(PROP_SQUISHDATA) || !defined(OPTIMIZER_ENABLED))
+	#define POI_SQUISH_ACTIVE
+	#define VRCSQUISH_NONE -1000000.0
+	#define VRCSQUISH_FAR 1000000.0
+
+	struct VRCSquishVertex
+	{
+		float3 pos;
+		float3 normal;
+		float3 tangent;
+		int region;
+		float mask;
+	};
+
+	struct VRCSquishField
+	{
+		float disp;
+		float2 grad;
+		float nearest;
+	};
+
+	void VRCSquishBSpline(float t, out float4 w, out float4 dw)
+	{
+		float it = 1.0 - t;
+		float t2 = t * t;
+		float t3 = t2 * t;
+		w = float4(it * it * it, 3.0 * t3 - 6.0 * t2 + 4.0, -3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0, t3) / 6.0;
+		dw = float4(-0.5 * it * it, 1.5 * t2 - 2.0 * t, -1.5 * t2 + t + 0.5, 0.5 * t2);
+	}
+
+	float3 VRCSquishOctDecode(float2 f)
+	{
+		float3 n = float3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+		float t = saturate(-n.z);
+		n.xy += n.xy >= 0.0 ? -t : t;
+		return normalize(n);
+	}
+
+	float4 VRCSquishFetch(uint texel)
+	{
+		uint w = max((uint)_SquishData_TexelSize.z, 1u);
+		return _SquishData.Load(int3(texel % w, texel / w, 0));
+	}
+
+	VRCSquishVertex VRCSquishLoad(uint vertexId)
+	{
+		float4 t0 = VRCSquishFetch(vertexId * 2);
+		float4 t1 = VRCSquishFetch(vertexId * 2 + 1);
+		VRCSquishVertex s;
+		s.pos = t0.xyz;
+		s.normal = VRCSquishOctDecode(t1.xy);
+		s.tangent = VRCSquishOctDecode(t1.zw);
+		s.region = t0.w < 1.0 ? -1 : (int)floor(t0.w) - 1;
+		s.mask = t0.w < 1.0 ? 0.0 : saturate(frac(t0.w) / 0.99);
+		return s;
+	}
+
+	float4 VRCSquishCam(int region)
+	{
+		return region == 0 ? _SquishCam0 : region == 1 ? _SquishCam1 : region == 2 ? _SquishCam2 : _SquishCam3;
+	}
+
+	bool VRCSquishIsRegionCamera(int region)
+	{
+		return unity_OrthoParams.w > 0.5 && abs(_ProjectionParams.y - (0.0011 + 0.0001 * region)) < 0.00002;
+	}
+
+	float VRCSquishSceneDistance(int region, float4 cam, float2 xy)
+	{
+		if (cam.x <= 0) return VRCSQUISH_FAR;
+		float s = max(_SquishScale, 0.0001);
+		float2 uv = xy * s / (2.0 * cam.x) + 0.5;
+		if (_SquishFlipY > 0.5) uv.y = 1.0 - uv.y;
+		if (any(uv < 0.0) || any(uv > 1.0)) return VRCSQUISH_FAR;
+
+		float tiles = max(_SquishTiles, 1.0);
+		float halfTexel = 0.5 * tiles / max(_SquishDepth_TexelSize.z, 1.0);
+		uv = clamp(uv, halfTexel, 1.0 - halfTexel);
+		float2 tile = tiles > 1.5 ? float2(region & 1, region >> 1) : float2(0, 0);
+		float raw = _SquishDepth.SampleLevel(vrcsquish_linear_clamp_sampler, (uv + tile) / tiles, 0).r;
+
+		if (raw <= 0.00001 || raw >= 0.99999) return VRCSQUISH_FAR;
+		#if defined(UNITY_REVERSED_Z)
+			raw = 1.0 - raw;
+		#endif
+		return cam.z + raw * (cam.w - cam.z);
+	}
+
+	float VRCSquishVertexDistance(float4 cam, float3 p)
+	{
+		return (p.z + cam.y) * max(_SquishScale, 0.0001);
+	}
+
+	float VRCSquishNode(int region, float4 cam, float2 node, float spacing, float vertexDist, float maxDepth, int sub, inout float nearest)
+	{
+		float sum = 0;
+		int count = sub * sub;
+		[unroll]
+		for (int k = 0; k < count; k++)
+		{
+			float2 offset = ((float2(k % sub, k / sub) + 0.5) / sub - 0.5) * spacing;
+			float pen = vertexDist - VRCSquishSceneDistance(region, cam, node + offset) - _SquishContactThreshold;
+			nearest = max(nearest, pen);
+			sum += saturate(pen / maxDepth);
+		}
+		return sum / count;
+	}
+
+	float VRCSquishTap(float4 w, int i)
+	{
+		return dot(w, float4(i == 1, i == 2, i == 3, i == 4));
+	}
+
+	float VRCSquishKernel(float4 wx, float4 wy, int x, int y, bool dilate)
+	{
+		float center = VRCSquishTap(wx, x) * VRCSquishTap(wy, y);
+		if (!dilate) return center;
+		float side = (VRCSquishTap(wx, x - 1) + VRCSquishTap(wx, x + 1)) * VRCSquishTap(wy, y)
+			+ VRCSquishTap(wx, x) * (VRCSquishTap(wy, y - 1) + VRCSquishTap(wy, y + 1));
+		return 0.5 * center + 0.125 * side;
+	}
+
+	void VRCSquishGrid(int region, float4 cam, float2 xy, float vertexDist, float spacing, bool dilate, int sub, out float value, out float2 grad, inout float nearest)
+	{
+		float2 q = xy / spacing;
+		float2 cell = floor(q);
+		float2 f = q - cell;
+		float4 wx, dwx, wy, dwy;
+		VRCSquishBSpline(f.x, wx, dwx);
+		VRCSquishBSpline(f.y, wy, dwy);
+		float maxDepth = max(_SquishMaxDepth, 0.00001);
+		int reach = dilate ? 1 : 0;
+
+		value = 0;
+		grad = 0;
+		[loop]
+		for (int n = 0; n < 36; n++)
+		{
+			int x = n % 6;
+			int y = n / 6;
+			int outside = (x < 1 || x > 4 ? 1 : 0) + (y < 1 || y > 4 ? 1 : 0);
+			if (outside > reach) continue;
+
+			float v = VRCSquishNode(region, cam, (cell + float2(x - 2, y - 2)) * spacing, spacing, vertexDist, maxDepth, sub, nearest);
+			value += VRCSquishKernel(wx, wy, x, y, dilate) * v;
+			grad += float2(VRCSquishKernel(dwx, wy, x, y, dilate), VRCSquishKernel(wx, dwy, x, y, dilate)) * v;
+		}
+		grad /= spacing;
+	}
+
+	VRCSquishField VRCSquishSampleField(int region, float4 cam, float3 p)
+	{
+		float spacing = max(_SquishSoftness, 0.002) * 0.5;
+		float vertexDist = VRCSquishVertexDistance(cam, p);
+		VRCSquishField field;
+		field.nearest = VRCSQUISH_NONE;
+		field.disp = 0;
+		field.grad = 0;
+
+		float k = _SquishBulge * 0.5;
+		float wide = 0;
+		float2 gWide = 0;
+		if (k != 0) VRCSquishGrid(region, cam, p.xy, vertexDist, spacing * 2.0, false, 1, wide, gWide, field.nearest);
+
+		float probe;
+		float2 gProbe;
+		VRCSquishGrid(region, cam, p.xy, vertexDist, spacing, true, 2, probe, gProbe, field.nearest);
+		if (field.nearest <= 0) return field;
+
+		float b;
+		float2 gb;
+		VRCSquishGrid(region, cam, p.xy, vertexDist, spacing, true, 4, b, gb, field.nearest);
+
+		float ob = 1.0 - b;
+		float dent = 1.0 - ob * ob * ob;
+		float2 gDent = 3.0 * ob * ob * gb;
+
+		float open = 1.0 - dent;
+		float bulge = k * wide * open * open;
+		float2 gBulge = k * (gWide * open * open - wide * 2.0 * open * gDent);
+
+		float maxDepth = max(_SquishMaxDepth, 0.00001);
+		field.disp = (dent - bulge) * maxDepth;
+		field.grad = (gDent - gBulge) * maxDepth;
+		return field;
+	}
+
+	bool VRCSquishDeform(VRCSquishVertex s, inout float4 vertex, inout float3 normal, float4 tangent)
+	{
+		if (s.region < 0 || s.mask <= 0) return false;
+		if (VRCSquishIsRegionCamera(s.region)) return true;
+		if (_SquishOn < 0.5) return false;
+
+		float4 cam = VRCSquishCam(s.region);
+		float weight = s.mask * _SquishStrength;
+		if (weight == 0) return false;
+		VRCSquishField field = VRCSquishSampleField(s.region, cam, s.pos);
+		float d0 = field.disp * weight;
+		if (abs(d0) < 0.000001) return false;
+
+		bool hasTangent = dot(tangent.xyz, tangent.xyz) > 0.000001;
+		float tangentSign = tangent.w < 0 ? -1.0 : 1.0;
+		float3 objN = normalize(normal);
+		float3 objT = hasTangent ? normalize(tangent.xyz) : float3(0, 0, 0);
+		float3 objB = cross(objN, objT) * tangentSign;
+		float3 restB = cross(s.normal, s.tangent) * tangentSign;
+
+		float3 push = float3(0, 0, -1);
+		float3 pushObj = hasTangent
+			? dot(push, s.tangent) * objT + dot(push, restB) * objB + dot(push, s.normal) * objN
+			: -objN;
+		float3 pushWorld = normalize(mul((float3x3)unity_ObjectToWorld, pushObj));
+		vertex.xyz += mul((float3x3)unity_WorldToObject, pushWorld * d0);
+
+		if (_SquishNormals > 0 && hasTangent)
+		{
+			float2 slope = field.grad * weight / max(_SquishScale, 0.0001);
+			float gT = clamp(dot(slope, s.tangent.xy), -2.0, 2.0);
+			float gB = clamp(dot(slope, restB.xy), -2.0, 2.0);
+			float3 z = float3(0, 0, 1);
+			float3 n2 = normalize(cross(s.tangent - z * gT, restB - z * gB));
+			if (dot(n2, s.normal) < 0) n2 = -n2;
+			float3 nObj = dot(n2, s.tangent) * objT + dot(n2, restB) * objB + dot(n2, s.normal) * objN;
+			normal = normalize(lerp(objN, normalize(nObj), _SquishNormals));
+		}
+		return false;
+	}
+
+	bool applySquish(inout appdata v)
+	{
+		return VRCSquishDeform(VRCSquishLoad(v.vertexId), v.vertex, v.normal, v.tangent);
+	}
+
+	VRCSquishVertex VRCSquishInterpolate(VRCSquishVertex a, VRCSquishVertex b, VRCSquishVertex c, float3 bary)
+	{
+		VRCSquishVertex main = a;
+		if (b.mask > main.mask) main = b;
+		if (c.mask > main.mask) main = c;
+
+		VRCSquishVertex s = main;
+		if (main.region < 0) return s;
+		if (a.region != main.region) { a = main; a.mask = 0; }
+		if (b.region != main.region) { b = main; b.mask = 0; }
+		if (c.region != main.region) { c = main; c.mask = 0; }
+
+		s.pos = a.pos * bary.x + b.pos * bary.y + c.pos * bary.z;
+		s.normal = normalize(a.normal * bary.x + b.normal * bary.y + c.normal * bary.z);
+		s.tangent = normalize(a.tangent * bary.x + b.tangent * bary.y + c.tangent * bary.z);
+		s.mask = a.mask * bary.x + b.mask * bary.y + c.mask * bary.z;
+		return s;
+	}
+
+	float VRCSquishNearest(int region, float3 p)
+	{
+		float4 cam = VRCSquishCam(region);
+		float nearest = VRCSQUISH_NONE;
+		float value;
+		float2 grad;
+		VRCSquishGrid(region, cam, p.xy, VRCSquishVertexDistance(cam, p), max(_SquishSoftness, 0.002), false, 1, value, grad, nearest);
+		return nearest;
+	}
+
+	float VRCSquishEdgeCap(VRCSquishVertex a, VRCSquishVertex b)
+	{
+		if (a.region < 0 || a.region != b.region) return 1.0;
+		float len = length(a.pos - b.pos) * max(_SquishScale, 0.0001);
+		return clamp(len / max(_SquishTessEdge, 0.0005), 1.0, max(_SquishTessMax, 1.0));
+	}
+
+	float VRCSquishEdgeFactor(float cap, float nearA, float nearB)
+	{
+		float reach = max(_SquishTessReach, 0.0001);
+		float t = saturate((max(nearA, nearB) + reach) / reach);
+		return lerp(1.0, cap, t * t);
+	}
+
+	float4 VRCSquishTessFactors(uint id0, uint id1, uint id2)
+	{
+		if (_SquishOn < 0.5) return 1;
+		VRCSquishVertex a = VRCSquishLoad(id0);
+		VRCSquishVertex b = VRCSquishLoad(id1);
+		VRCSquishVertex c = VRCSquishLoad(id2);
+
+		float3 cap = float3(VRCSquishEdgeCap(b, c), VRCSquishEdgeCap(c, a), VRCSquishEdgeCap(a, b));
+		if (all(cap <= 1.01)) return 1;
+
+		float nearA = (cap.y > 1.01 || cap.z > 1.01) ? VRCSquishNearest(a.region, a.pos) : VRCSQUISH_NONE;
+		float nearB = (cap.x > 1.01 || cap.z > 1.01) ? VRCSquishNearest(b.region, b.pos) : VRCSQUISH_NONE;
+		float nearC = (cap.x > 1.01 || cap.y > 1.01) ? VRCSquishNearest(c.region, c.pos) : VRCSQUISH_NONE;
+
+		float4 f;
+		f.x = VRCSquishEdgeFactor(cap.x, nearB, nearC);
+		f.y = VRCSquishEdgeFactor(cap.y, nearC, nearA);
+		f.z = VRCSquishEdgeFactor(cap.z, nearA, nearB);
+		f.w = max(f.x, max(f.y, f.z));
+		return f;
+	}
+#endif
+//endex
+
+#T#VRCSquishFunctionCalls
+//ifex _SquishEnabled==0
+#if defined(POI_SQUISH_ACTIVE) && !defined(POI_TESSELLATED)
+	bool vrcSquishHide = applySquish(v);
+#endif
+//endex
+
+#T#VRCSquishPostClip
+//ifex _SquishEnabled==0
+#if defined(POI_SQUISH_ACTIVE) && !defined(POI_TESSELLATED)
+	if (vrcSquishHide) o.pos = asfloat(0x7fc00000).xxxx;
+#endif
+//endex
+
+#T#VRCSquishHullDomainProgram
+struct VRCSquishPatchFactors
+{
+	float edge[3] : SV_TessFactor;
+	float inside : SV_InsideTessFactor;
+};
+
+tessAppData VertexProgram(appdata v)
+{
+	tessAppData t;
+	UNITY_SETUP_INSTANCE_ID(v);
+	UNITY_INITIALIZE_OUTPUT(tessAppData, t);
+	UNITY_TRANSFER_INSTANCE_ID(v, t);
+	UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(t);
+	t.vertex = v.vertex;
+	t.normal = v.normal;
+	t.tangent = v.tangent;
+	t.color = v.color;
+	t.uv0 = v.uv0;
+	t.uv1 = v.uv1;
+	t.uv2 = v.uv2;
+	t.uv3 = v.uv3;
+	t.vertexId = v.vertexId;
+	return t;
+}
+
+bool VRCSquishPatchOffscreen(float4 a, float4 b, float4 c)
+{
+	float3 x = float3(a.x, b.x, c.x);
+	float3 y = float3(a.y, b.y, c.y);
+	float3 w = float3(a.w, b.w, c.w) * 1.2 + 0.05;
+	return all(x < -w) || all(x > w) || all(y < -w) || all(y > w) || all(w <= 0.05);
+}
+
+VRCSquishPatchFactors VRCSquishPatchConstant(InputPatch<tessAppData, 3> patch)
+{
+	UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(patch[0]);
+	VRCSquishPatchFactors f;
+	float4 factors = 1;
+	#ifdef POI_SQUISH_ACTIVE
+		factors = VRCSquishTessFactors(patch[0].vertexId, patch[1].vertexId, patch[2].vertexId);
+	#endif
+
+	float4 c0 = UnityObjectToClipPos(patch[0].vertex.xyz);
+	float4 c1 = UnityObjectToClipPos(patch[1].vertex.xyz);
+	float4 c2 = UnityObjectToClipPos(patch[2].vertex.xyz);
+	if (VRCSquishPatchOffscreen(c0, c1, c2)) factors = 0;
+
+	f.edge[0] = factors.x;
+	f.edge[1] = factors.y;
+	f.edge[2] = factors.z;
+	f.inside = factors.w;
+	return f;
+}
+
+[UNITY_domain("tri")]
+[UNITY_outputcontrolpoints(3)]
+[UNITY_outputtopology("triangle_cw")]
+[UNITY_partitioning("fractional_odd")]
+[UNITY_patchconstantfunc("VRCSquishPatchConstant")]
+tessAppData HullProgram(InputPatch<tessAppData, 3> patch, uint id : SV_OutputControlPointID)
+{
+	UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(patch[id]);
+	return patch[id];
+}
+
+[UNITY_domain("tri")]
+VertexOut DomainProgram(VRCSquishPatchFactors factors, OutputPatch<tessAppData, 3> patch, float3 bary : SV_DomainLocation)
+{
+	UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(patch[0]);
+	tessAppData data;
+	UNITY_INITIALIZE_OUTPUT(tessAppData, data);
+	#define VRCSQUISH_BLEND(field) data.field = patch[0].field * bary.x + patch[1].field * bary.y + patch[2].field * bary.z
+	VRCSQUISH_BLEND(vertex);
+	VRCSQUISH_BLEND(normal);
+	VRCSQUISH_BLEND(tangent);
+	VRCSQUISH_BLEND(color);
+	VRCSQUISH_BLEND(uv0);
+	VRCSQUISH_BLEND(uv1);
+	VRCSQUISH_BLEND(uv2);
+	VRCSQUISH_BLEND(uv3);
+	#undef VRCSQUISH_BLEND
+	data.vertexId = patch[0].vertexId;
+
+	UNITY_TRANSFER_INSTANCE_ID(patch[0], data);
+	UNITY_TRANSFER_VERTEX_OUTPUT_STEREO(patch[0], data);
+
+	#ifdef POI_SQUISH_ACTIVE
+		float3 flat = data.vertex.xyz;
+		float3 curved = 0;
+		[unroll]
+		for (int i = 0; i < 3; i++)
+		{
+			float3 n = normalize(patch[i].normal);
+			curved += (flat - n * dot(flat - patch[i].vertex.xyz, n)) * bary[i];
+		}
+		data.vertex.xyz = lerp(flat, curved, _SquishTessPhong);
+
+		bool squishHide = VRCSquishDeform(
+			VRCSquishInterpolate(VRCSquishLoad(patch[0].vertexId), VRCSquishLoad(patch[1].vertexId), VRCSquishLoad(patch[2].vertexId), bary),
+			data.vertex, data.normal, data.tangent);
+		VertexOut squishOut = vert(data);
+		if (squishHide) squishOut.pos = asfloat(0x7fc00000).xxxx;
+		return squishOut;
+	#else
+		return vert(data);
+	#endif
+}

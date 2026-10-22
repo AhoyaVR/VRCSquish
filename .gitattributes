@@ -1,0 +1,5 @@
+* text=auto
+*.cs text eol=lf
+*.meta text eol=lf
+*.asmdef text eol=lf
+*.poiTemplateCollection text eol=lf
