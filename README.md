@@ -1,4 +1,4 @@
-# VRCSquish v1.1
+# VRCSquish v1.1.0
 VRCSquish allows you to place Squish Zones on your avatar that depress to the touch of other players.
 
 ## Where To Start
