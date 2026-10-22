@@ -492,3 +492,114 @@ VertexOut DomainProgram(VRCSquishPatchFactors factors, OutputPatch<tessAppData, 
 		return vert(data);
 	#endif
 }
+
+#T#VRCSquishHullDomainProgram10
+struct VRCSquishPatchFactors
+{
+	float edge[3] : SV_TessFactor;
+	float inside : SV_InsideTessFactor;
+};
+
+appdata vertPrePass(appdata v, uint vid : SV_VertexID)
+{
+	appdata t;
+	UNITY_SETUP_INSTANCE_ID(v);
+	PoiInitStruct(appdata, t);
+	UNITY_TRANSFER_INSTANCE_ID(v, t);
+	t.vertex = v.vertex;
+	t.normal = v.normal;
+	t.tangent = v.tangent;
+	t.color = v.color;
+	t.uv0 = v.uv0;
+	t.uv1 = v.uv1;
+	t.uv2 = v.uv2;
+	t.uv3 = v.uv3;
+	t.vertexId = vid;
+	#ifdef POI_PASS_MOTION_VECTORS
+		t.positionOld = v.positionOld;
+		#if _ADD_PRECOMPUTED_VELOCITY
+			t.alembicMotionVector = v.alembicMotionVector;
+		#endif
+	#endif
+	return t;
+}
+
+bool VRCSquishPatchOffscreen(float4 a, float4 b, float4 c)
+{
+	float3 x = float3(a.x, b.x, c.x);
+	float3 y = float3(a.y, b.y, c.y);
+	float3 w = float3(a.w, b.w, c.w) * 1.2 + 0.05;
+	return all(x < -w) || all(x > w) || all(y < -w) || all(y > w) || all(w <= 0.05);
+}
+
+VRCSquishPatchFactors VRCSquishPatchConstant(InputPatch<appdata, 3> patch)
+{
+	VRCSquishPatchFactors f;
+	float4 factors = 1;
+	#ifdef POI_SQUISH_ACTIVE
+		factors = VRCSquishTessFactors(patch[0].vertexId, patch[1].vertexId, patch[2].vertexId);
+	#endif
+
+	float4 c0 = UnityObjectToClipPos(patch[0].vertex.xyz);
+	float4 c1 = UnityObjectToClipPos(patch[1].vertex.xyz);
+	float4 c2 = UnityObjectToClipPos(patch[2].vertex.xyz);
+	if (VRCSquishPatchOffscreen(c0, c1, c2)) factors = 0;
+
+	f.edge[0] = factors.x;
+	f.edge[1] = factors.y;
+	f.edge[2] = factors.z;
+	f.inside = factors.w;
+	return f;
+}
+
+[UNITY_domain("tri")]
+[UNITY_outputcontrolpoints(3)]
+[UNITY_outputtopology("triangle_cw")]
+[UNITY_partitioning("fractional_odd")]
+[UNITY_patchconstantfunc("VRCSquishPatchConstant")]
+appdata hull(InputPatch<appdata, 3> patch, uint id : SV_OutputControlPointID)
+{
+	return patch[id];
+}
+
+[UNITY_domain("tri")]
+VertexOut domain(VRCSquishPatchFactors factors, OutputPatch<appdata, 3> patch, float3 bary : SV_DomainLocation)
+{
+	appdata data;
+	PoiInitStruct(appdata, data);
+	UNITY_TRANSFER_INSTANCE_ID(patch[0], data);
+	#define VRCSQUISH_BLEND(field) data.field = patch[0].field * bary.x + patch[1].field * bary.y + patch[2].field * bary.z
+	VRCSQUISH_BLEND(vertex);
+	VRCSQUISH_BLEND(normal);
+	VRCSQUISH_BLEND(tangent);
+	VRCSQUISH_BLEND(color);
+	VRCSQUISH_BLEND(uv0);
+	VRCSQUISH_BLEND(uv1);
+	VRCSQUISH_BLEND(uv2);
+	VRCSQUISH_BLEND(uv3);
+	#undef VRCSQUISH_BLEND
+
+	uint corner = bary.y > bary.x ? (bary.z > bary.y ? 2 : 1) : (bary.z > bary.x ? 2 : 0);
+	data.vertexId = patch[corner].vertexId;
+
+	#ifdef POI_SQUISH_ACTIVE
+		float3 flat = data.vertex.xyz;
+		float3 curved = 0;
+		[unroll]
+		for (int i = 0; i < 3; i++)
+		{
+			float3 n = normalize(patch[i].normal);
+			curved += (flat - n * dot(flat - patch[i].vertex.xyz, n)) * bary[i];
+		}
+		data.vertex.xyz = lerp(flat, curved, _SquishTessPhong);
+
+		bool squishHide = VRCSquishDeform(
+			VRCSquishInterpolate(VRCSquishLoad(patch[0].vertexId), VRCSquishLoad(patch[1].vertexId), VRCSquishLoad(patch[2].vertexId), bary),
+			data.vertex, data.normal, data.tangent);
+		VertexOut squishOut = vert(data);
+		if (squishHide) squishOut.pos = asfloat(0x7fc00000).xxxx;
+		return squishOut;
+	#else
+		return vert(data);
+	#endif
+}
