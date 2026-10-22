@@ -21,8 +21,6 @@ Go to Ahoya -> VRCSquish in the toolbar to begin.
 
 I have no plans to port it to other versions and cannot guarantee functionality on anything newer/older. If someone else would like to port it, feel free.
 
-Do not import this package into your project unless you have one of the listed versions. 
-
 **Non-pro versions of Poiyomi before v10.0.20 will not work with this module.**
 
 ## Distribution
