@@ -22,7 +22,9 @@ namespace VRCSquish
 
         public float FarPlane => (depth + size.z) * 2f + 0.05f;
 
-        public static float NearPlane(int regionIndex) => 0.0011f + 0.0001f * regionIndex;
+        public const int MaxId = 2047;
+
+        public static float NearPlane(int id, int regionIndex) => 0.001f + (id * SquishSetup.MaxRegions + regionIndex) * 0.0000002f;
 
         public float Distance(Vector3 local)
         {

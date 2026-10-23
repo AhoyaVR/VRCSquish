@@ -57,6 +57,27 @@ namespace VRCSquish.Editor
                 .Distinct().ToList();
         }
 
+        static List<Material> LiteMaterials(SquishSetup setup)
+        {
+            return setup.selfRenderers.Where(r => r != null)
+                .SelectMany(r => r.sharedMaterials)
+                .Where(m => m != null && VRCSquishShaderInstaller.IsLiteShader(OriginalShader(m)))
+                .Distinct().ToList();
+        }
+
+        static Shader OriginalShader(Material m) => Thry.ShaderOptimizer.IsMaterialLocked(m) ? Thry.ShaderOptimizer.GetOriginalShader(m) : m.shader;
+
+        static List<ModularShader> Sources(List<Material> materials)
+        {
+            return materials.Select(OriginalShader)
+                .Where(s => s != null)
+                .Select(VRCSquishShaderInstaller.SourceShaderName)
+                .Distinct()
+                .Select(VRCSquishShaderInstaller.FindModularShader)
+                .Where(s => s != null)
+                .ToList();
+        }
+
         public static BakeResult Bake(SquishSetup setup)
         {
             BakeResult result = new BakeResult();
@@ -110,16 +131,26 @@ namespace VRCSquish.Editor
 
             if (jobs.Count == 0) return Fail(result, "No mesh inside a region");
 
+            if (setup.id < 1 || setup.id > SquishRegion.MaxId)
+            {
+                Undo.RecordObject(setup, "Bake VRC Squish");
+                setup.id = Random.Range(1, SquishRegion.MaxId + 1);
+            }
+
             List<Material> squishMaterials = jobs.SelectMany(j => j.Slots.Select(s => j.Renderer.sharedMaterials[s])).Where(m => m != null).Distinct().ToList();
             Dictionary<Material, Shader> shaderFor = new Dictionary<Material, Shader>();
 
-            PrepareMaterials(squishMaterials, shaderFor, result.Messages);
+            PrepareMaterials(squishMaterials, shaderFor, result.Messages, false);
 
             foreach (RendererJob job in jobs)
             {
                 Texture2D tex = SaveTexture(job.Texture, $"{folder}/{Sanitize(job.Renderer.name)}_SquishData.asset");
                 AssignMaterials(setup, job, tex, folder, shaderFor, materialMesh);
             }
+
+            if (setup.hideSelf) ApplySelfHiding(setup, avatar, result.Messages);
+
+            else RevertSelfHiding(setup, result.Messages);
 
             int tiles = regions.Count > 1 ? 2 : 1;
             RenderTexture atlas = GetOrCreateAtlas($"{folder}/Depth.renderTexture", Mathf.Clamp(setup.resolution, 16, 1024) * tiles);
@@ -128,9 +159,9 @@ namespace VRCSquish.Editor
             for (int k = 0; k < regions.Count; k++)
             {
                 SquishRegion region = regions[k];
-                cams[k] = new Vector4(region.OrthoHalfSize, region.depth, SquishRegion.NearPlane(k), region.FarPlane);
-                BuildCamera(region, k, tiles, atlas, CameraName, setup.layers);
-                BuildCamera(region, k, tiles, atlas, NoSelfCameraName, setup.layers & ~(1 << PlayerLocalLayer));
+                cams[k] = new Vector4(region.OrthoHalfSize, region.depth, SquishRegion.NearPlane(setup.id, k), region.FarPlane);
+                BuildCamera(region, k, tiles, atlas, CameraName, setup.layers, setup.id);
+                BuildCamera(region, k, tiles, atlas, NoSelfCameraName, setup.layers & ~(1 << PlayerLocalLayer), setup.id);
             }
 
             foreach (Material mat in materialMesh.Keys)
@@ -142,7 +173,7 @@ namespace VRCSquish.Editor
                 EditorUtility.SetDirty(mat);
             }
 
-            AnimatorController controller = BuildController(avatar, renderers, regions, $"{folder}/VRCSquish_FX.controller");
+            AnimatorController controller = BuildController(avatar, renderers, setup.selfRenderers, regions, setup.hideSelf, $"{folder}/VRCSquish_FX.controller");
 
             BuildFullController(setup, controller, folder);
             BuildToggle(setup, avatar, renderers, $"{folder}/VRCSquish_On.anim");
@@ -157,19 +188,17 @@ namespace VRCSquish.Editor
         public static BakeResult RebuildShaders(SquishSetup setup)
         {
             BakeResult result = new BakeResult();
-            List<ModularShader> sources = SquishMaterials(setup)
-                .Select(m => VRCSquishShaderInstaller.SourceShaderName(m.shader))
-                .Distinct()
-                .Select(VRCSquishShaderInstaller.FindModularShader)
-                .Where(s => s != null)
-                .ToList();
+            List<ModularShader> sources = Sources(SquishMaterials(setup));
+            List<ModularShader> liteSources = Sources(LiteMaterials(setup));
 
-            if (sources.Count == 0) return Fail(result, "Nothing to rebuild");
+            if (sources.Count + liteSources.Count == 0) return Fail(result, "Nothing to rebuild");
 
-            VRCSquishShaderInstaller.Install(sources);
+            if (sources.Count > 0) VRCSquishShaderInstaller.Install(sources);
+
+            if (liteSources.Count > 0) VRCSquishShaderInstaller.Install(liteSources, true);
 
             result.Success = true;
-            result.Messages.Add($"Rebuilt {Plural(sources.Count, "shader")}");
+            result.Messages.Add($"Rebuilt {Plural(sources.Count + liteSources.Count, "shader")}");
 
             return result;
         }
@@ -286,9 +315,10 @@ namespace VRCSquish.Editor
             return slots;
         }
 
-        static void PrepareMaterials(List<Material> materials, Dictionary<Material, Shader> shaderFor, List<string> messages)
+        static void PrepareMaterials(List<Material> materials, Dictionary<Material, Shader> shaderFor, List<string> messages, bool lite)
         {
             List<Material> locked = materials.Where(Thry.ShaderOptimizer.IsMaterialLocked).ToList();
+            List<string> notPoiyomi = new List<string>();
 
             Dictionary<Material, string> sourceName = new Dictionary<Material, string>();
 
@@ -305,16 +335,20 @@ namespace VRCSquish.Editor
 
                 if (!source.StartsWith(".poiyomi/"))
                 {
-                    messages.Add($"{m.name}: not Poiyomi");
+                    notPoiyomi.Add(m.name);
                     continue;
                 }
 
                 sourceName[m] = source;
             }
 
+            if (notPoiyomi.Count > 0) messages.Add(lite ? $"Still seen by own cameras, not Poiyomi: {string.Join(", ", notPoiyomi)}" : $"Not Poiyomi: {string.Join(", ", notPoiyomi)}");
+
+            locked = locked.Where(sourceName.ContainsKey).ToList();
+
             List<ModularShader> toGenerate = new List<ModularShader>();
 
-            foreach (string name in sourceName.Values.Distinct().Where(n => !VRCSquishShaderInstaller.IsUpToDate(VRCSquishShaderInstaller.FindSquishVariant(n))))
+            foreach (string name in sourceName.Values.Distinct().Where(n => !VRCSquishShaderInstaller.IsUpToDate(VRCSquishShaderInstaller.FindSquishVariant(n, lite))))
             {
                 ModularShader modular = VRCSquishShaderInstaller.FindModularShader(name);
                 if (modular != null) toGenerate.Add(modular);
@@ -332,11 +366,11 @@ namespace VRCSquish.Editor
                 }
             }
 
-            if (toGenerate.Count > 0) VRCSquishShaderInstaller.Install(toGenerate);
+            if (toGenerate.Count > 0) VRCSquishShaderInstaller.Install(toGenerate, lite);
 
             foreach (KeyValuePair<Material, string> pair in sourceName)
             {
-                Shader squish = VRCSquishShaderInstaller.FindSquishVariant(pair.Value);
+                Shader squish = VRCSquishShaderInstaller.FindSquishVariant(pair.Value, lite);
 
                 if (squish != null) shaderFor[pair.Key] = squish;
                 else messages.Add($"{pair.Key.name}: shader build failed");
@@ -383,6 +417,9 @@ namespace VRCSquish.Editor
                 mat.EnableKeyword("POI_SQUISH");
                 mat.SetOverrideTag("_SquishScaleAnimated", "1");
                 mat.SetOverrideTag("_SquishOnAnimated", "2");
+                mat.SetOverrideTag("_SquishSelfAnimated", "1");
+                mat.SetFloat("_SquishId", setup.id);
+                mat.SetFloat("_SquishSelf", 1);
                 if (string.IsNullOrEmpty(mat.GetTag("thry_rename_suffix", false, "")))
                     mat.SetOverrideTag("thry_rename_suffix", Thry.ShaderOptimizer.GetRenamedPropertySuffix(mat));
                 mat.SetFloat("_SquishOn", 0);
@@ -393,6 +430,92 @@ namespace VRCSquish.Editor
 
             Undo.RecordObject(renderer, "Bake VRC Squish");
             renderer.sharedMaterials = mats;
+        }
+
+        static void ApplySelfHiding(SquishSetup setup, VRCAvatarDescriptor avatar, List<string> messages)
+        {
+            List<Renderer> candidates = avatar.GetComponentsInChildren<Renderer>(true)
+                .Where(r => r is SkinnedMeshRenderer || r is MeshRenderer)
+                .ToList();
+
+            List<Material> materials = candidates.SelectMany(r => r.sharedMaterials)
+                .Where(m => m != null)
+                .Distinct()
+                .Where(m => !VRCSquishShaderInstaller.IsSquishShader(OriginalShader(m)) || VRCSquishShaderInstaller.IsLiteShader(OriginalShader(m)))
+                .ToList();
+
+            Dictionary<Material, Shader> shaderFor = new Dictionary<Material, Shader>();
+
+            PrepareMaterials(materials, shaderFor, messages, true);
+
+            foreach (KeyValuePair<Material, Shader> pair in shaderFor)
+            {
+                Material mat = pair.Key;
+                Undo.RecordObject(mat, "Bake VRC Squish");
+
+                if (mat.shader != pair.Value)
+                {
+                    int queue = mat.renderQueue;
+                    mat.shader = pair.Value;
+                    mat.renderQueue = queue;
+                }
+
+                mat.SetFloat("_SquishEnabled", 1);
+                mat.EnableKeyword("POI_SQUISH");
+                mat.SetOverrideTag("_SquishSelfAnimated", "1");
+                mat.SetFloat("_SquishId", setup.id);
+                mat.SetFloat("_SquishSelf", 1);
+                EditorUtility.SetDirty(mat);
+            }
+
+            Undo.RecordObject(setup, "Bake VRC Squish");
+            setup.selfRenderers = candidates
+                .Where(r => r.sharedMaterials.Any(m => m != null && VRCSquishShaderInstaller.IsSquishShader(OriginalShader(m))))
+                .ToList();
+        }
+
+        static void RevertSelfHiding(SquishSetup setup, List<string> messages)
+        {
+            List<Material> lite = LiteMaterials(setup);
+            List<Material> locked = lite.Where(Thry.ShaderOptimizer.IsMaterialLocked).ToList();
+
+            if (locked.Count > 0) Thry.ShaderOptimizer.SetLockedForAllMaterials(locked, 0, showProgressbar: true, allowCancel: false);
+
+            foreach (Material m in lite) RevertMaterial(m, messages);
+
+            Undo.RecordObject(setup, "Bake VRC Squish");
+            setup.selfRenderers.Clear();
+        }
+
+        static bool RevertMaterial(Material m, List<string> messages)
+        {
+            if (!VRCSquishShaderInstaller.IsSquishShader(m.shader)) return false;
+
+            Shader poi = Shader.Find(VRCSquishShaderInstaller.SourceShaderName(m.shader));
+
+            if (poi == null)
+            {
+                messages.Add($"{m.name}: Poiyomi shader missing");
+                return false;
+            }
+
+            Undo.RecordObject(m, "Remove VRC Squish");
+
+            int queue = m.renderQueue;
+
+            m.SetTexture("_SquishData", null);
+            m.SetTexture("_SquishDepth", null);
+            m.SetFloat("_SquishEnabled", 0);
+            m.DisableKeyword("POI_SQUISH");
+            m.SetOverrideTag("_SquishScaleAnimated", "");
+            m.SetOverrideTag("_SquishOnAnimated", "");
+            m.SetOverrideTag("_SquishSelfAnimated", "");
+            m.shader = poi;
+            m.renderQueue = queue;
+
+            EditorUtility.SetDirty(m);
+
+            return true;
         }
 
         static RenderTexture GetOrCreateAtlas(string path, int size)
@@ -422,7 +545,7 @@ namespace VRCSquish.Editor
             return rt;
         }
 
-        static void BuildCamera(SquishRegion region, int index, int tiles, RenderTexture target, string name, int layers)
+        static void BuildCamera(SquishRegion region, int index, int tiles, RenderTexture target, string name, int layers, int id)
         {
             Transform old = region.transform.Find(name);
 
@@ -439,7 +562,7 @@ namespace VRCSquish.Editor
 
             cam.orthographic = true;
             cam.orthographicSize = region.OrthoHalfSize;
-            cam.nearClipPlane = SquishRegion.NearPlane(index);
+            cam.nearClipPlane = SquishRegion.NearPlane(id, index);
             cam.farClipPlane = region.FarPlane;
             cam.clearFlags = CameraClearFlags.SolidColor;
             cam.backgroundColor = Color.clear;
@@ -455,7 +578,7 @@ namespace VRCSquish.Editor
             cam.enabled = false;
         }
 
-        static AnimatorController BuildController(VRCAvatarDescriptor avatar, List<Renderer> renderers, List<SquishRegion> regions, string path)
+        static AnimatorController BuildController(VRCAvatarDescriptor avatar, List<Renderer> renderers, List<Renderer> selfRenderers, List<SquishRegion> regions, bool hideSelf, string path)
         {
             AssetDatabase.DeleteAsset(path);
 
@@ -467,9 +590,8 @@ namespace VRCSquish.Editor
             controller.AddParameter(ParamSelf, AnimatorControllerParameterType.Bool);
             controller.AddParameter(ParamLocal, AnimatorControllerParameterType.Bool);
 
-            List<(string path, System.Type type)> targets = renderers
-                .Select(r => (path: AnimationUtility.CalculateTransformPath(r.transform, avatar.transform), type: r.GetType()))
-                .ToList();
+            List<(string path, System.Type type)> targets = Targets(avatar, renderers);
+            List<(string path, System.Type type)> selfTargets = Targets(avatar, renderers.Concat(selfRenderers.Where(r => r != null)).Distinct());
 
             BlendTree root = NewTree(controller, "VRC Squish", BlendTreeType.Direct);
 
@@ -486,13 +608,20 @@ namespace VRCSquish.Editor
             state.writeDefaultValues = true;
             layer.stateMachine.defaultState = state;
 
-            controller.layers = new[] { layer, BuildCameraLayer(controller, avatar, regions) };
+            controller.layers = new[] { layer, BuildCameraLayer(controller, avatar, regions, selfTargets, hideSelf) };
 
             EditorUtility.SetDirty(controller);
             return controller;
         }
 
-        static AnimatorControllerLayer BuildCameraLayer(AnimatorController controller, VRCAvatarDescriptor avatar, List<SquishRegion> regions)
+        static List<(string path, System.Type type)> Targets(VRCAvatarDescriptor avatar, IEnumerable<Renderer> renderers)
+        {
+            return renderers
+                .Select(r => (path: AnimationUtility.CalculateTransformPath(r.transform, avatar.transform), type: r.GetType()))
+                .ToList();
+        }
+
+        static AnimatorControllerLayer BuildCameraLayer(AnimatorController controller, VRCAvatarDescriptor avatar, List<SquishRegion> regions, List<(string path, System.Type type)> selfTargets, bool hideSelf)
         {
             AnimatorStateMachine machine = new AnimatorStateMachine { name = "VRC Squish Cameras", hideFlags = HideFlags.HideInHierarchy };
 
@@ -501,15 +630,16 @@ namespace VRCSquish.Editor
             List<string> withSelf = CameraPaths(avatar, regions, CameraName);
             List<string> noSelf = CameraPaths(avatar, regions, NoSelfCameraName);
 
-            AnimatorState off = CameraState(controller, machine, "Off", withSelf, noSelf, false, false);
-            AnimatorState self = CameraState(controller, machine, "Self", withSelf, noSelf, true, false);
-            AnimatorState solo = CameraState(controller, machine, "NoSelf", withSelf, noSelf, false, true);
+            AnimatorState off = CameraState(controller, machine, "Off", withSelf, noSelf, selfTargets, false, false, 1);
+            AnimatorState self = CameraState(controller, machine, "Self", withSelf, noSelf, selfTargets, true, false, 1);
+            AnimatorState solo = CameraState(controller, machine, "NoSelf", withSelf, noSelf, selfTargets, false, true, 0);
+            AnimatorState remote = CameraState(controller, machine, "NoSelf Remote", withSelf, noSelf, selfTargets, true, false, hideSelf ? 0 : 1);
             machine.defaultState = off;
 
             CameraTransition(machine, off, (AnimatorConditionMode.IfNot, ParamOn));
             CameraTransition(machine, self, (AnimatorConditionMode.If, ParamOn), (AnimatorConditionMode.If, ParamSelf));
-            CameraTransition(machine, self, (AnimatorConditionMode.If, ParamOn), (AnimatorConditionMode.IfNot, ParamLocal));
             CameraTransition(machine, solo, (AnimatorConditionMode.If, ParamOn), (AnimatorConditionMode.IfNot, ParamSelf), (AnimatorConditionMode.If, ParamLocal));
+            CameraTransition(machine, remote, (AnimatorConditionMode.If, ParamOn), (AnimatorConditionMode.IfNot, ParamSelf), (AnimatorConditionMode.IfNot, ParamLocal));
 
             return new AnimatorControllerLayer { name = "VRC Squish Cameras", stateMachine = machine, defaultWeight = 1 };
         }
@@ -522,7 +652,7 @@ namespace VRCSquish.Editor
                 .ToList();
         }
 
-        static AnimatorState CameraState(AnimatorController controller, AnimatorStateMachine machine, string name, List<string> withSelf, List<string> noSelf, bool selfOn, bool noSelfOn)
+        static AnimatorState CameraState(AnimatorController controller, AnimatorStateMachine machine, string name, List<string> withSelf, List<string> noSelf, List<(string path, System.Type type)> selfTargets, bool selfOn, bool noSelfOn, float selfValue)
         {
             AnimationClip clip = new AnimationClip { name = $"VRC Squish Cameras {name}" };
 
@@ -531,6 +661,9 @@ namespace VRCSquish.Editor
 
             foreach (string path in noSelf)
                 AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(path, typeof(Camera), "m_Enabled"), AnimationCurve.Constant(0, 1 / 60f, noSelfOn ? 1 : 0));
+
+            foreach ((string path, System.Type type) t in selfTargets)
+                AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(t.path, t.type, "material._SquishSelf"), AnimationCurve.Constant(0, 1 / 60f, selfValue));
 
             AssetDatabase.AddObjectToAsset(clip, controller);
 
@@ -701,6 +834,7 @@ namespace VRCSquish.Editor
 
             List<Renderer> renderers = setup.renderers.Where(r => r != null)
                 .Concat(setup.swaps.Where(w => w.renderer != null).Select(w => w.renderer))
+                .Concat(setup.selfRenderers.Where(r => r != null))
                 .Distinct().ToList();
 
             List<Material> touched = renderers.SelectMany(r => r.sharedMaterials)
@@ -725,34 +859,7 @@ namespace VRCSquish.Editor
 
             int reverted = 0;
             foreach (Material m in touched)
-            {
-                if (!VRCSquishShaderInstaller.IsSquishShader(m.shader)) continue;
-
-                Shader poi = Shader.Find(VRCSquishShaderInstaller.SourceShaderName(m.shader));
-
-                if (poi == null)
-                {
-                    result.Messages.Add($"{m.name}: Poiyomi shader missing");
-                    continue;
-                }
-
-                Undo.RecordObject(m, "Remove VRC Squish");
-
-                int queue = m.renderQueue;
-
-                m.SetTexture("_SquishData", null);
-                m.SetTexture("_SquishDepth", null);
-                m.SetFloat("_SquishEnabled", 0);
-                m.DisableKeyword("POI_SQUISH");
-                m.SetOverrideTag("_SquishScaleAnimated", "");
-                m.SetOverrideTag("_SquishOnAnimated", "");
-                m.shader = poi;
-                m.renderQueue = queue;
-
-                EditorUtility.SetDirty(m);
-
-                reverted++;
-            }
+                if (RevertMaterial(m, result.Messages)) reverted++;
 
             string folder = avatar != null ? $"{setup.output.TrimEnd('/')}/{Sanitize(avatar.gameObject.name)}" : null;
 

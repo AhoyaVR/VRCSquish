@@ -2,8 +2,10 @@
 //ifex _SquishEnabled==0
 [HideInInspector] m_start_VRCSquish ("Squish--{reference_property:_SquishEnabled}", Float) = 0
 [HideInInspector][ThryToggle(POI_SQUISH)] _SquishEnabled ("Enable", Float) = 0
-[HideInInspector] _VRCSquishVersion ("Version", Float) = 14
+[HideInInspector] _VRCSquishVersion ("Version", Float) = 15
 [ToggleUI] _SquishOn ("Active", Float) = 1
+[ToggleUI] _SquishSelf ("Self", Float) = 1
+[HideInInspector] _SquishId ("Id", Float) = 0
 [NoScaleOffset] _SquishData ("Data", 2D) = "black" { }
 _SquishStrength ("Strength", Range(0, 1)) = 1
 _SquishMaxDepth ("Depth", Range(0, 0.2)) = 0.05
@@ -48,6 +50,8 @@ _SquishCam3 ("Camera3", Vector) = (0, 0, 0, 0)
 	float4 _SquishDepth_TexelSize;
 	SamplerState vrcsquish_linear_clamp_sampler;
 	float _SquishOn;
+	float _SquishSelf;
+	float _SquishId;
 	float _SquishStrength;
 	float _SquishMaxDepth;
 	float _SquishSoftness;
@@ -70,6 +74,36 @@ _SquishCam3 ("Camera3", Vector) = (0, 0, 0, 0)
 
 #T#VRCSquishFunctions
 //ifex _SquishEnabled==0
+#ifdef POI_SQUISH
+	#define VRCSQUISH_SELF_HIDE
+	#define VRCSQUISH_NEAR_BASE 0.001
+	#define VRCSQUISH_NEAR_STEP 0.0000002
+
+	float VRCSquishCameraSlot()
+	{
+		if (unity_OrthoParams.w < 0.5) return -1;
+		float slot = (_ProjectionParams.y - VRCSQUISH_NEAR_BASE) / VRCSQUISH_NEAR_STEP;
+		float nearest = round(slot);
+		return abs(slot - nearest) < 0.25 ? nearest : -1;
+	}
+
+	bool VRCSquishIsOwnCamera()
+	{
+		float slot = VRCSquishCameraSlot();
+		return _SquishId > 0.5 && slot >= 0 && floor(slot / 4.0) == round(_SquishId);
+	}
+
+	bool VRCSquishIsRegionCamera(int region)
+	{
+		return _SquishId > 0.5 && VRCSquishCameraSlot() == round(_SquishId) * 4.0 + region;
+	}
+
+	bool VRCSquishHideSelf()
+	{
+		return _SquishSelf < 0.5 && VRCSquishIsOwnCamera();
+	}
+#endif
+
 #if defined(POI_SQUISH) && (defined(PROP_SQUISHDATA) || !defined(OPTIMIZER_ENABLED))
 	#define POI_SQUISH_ACTIVE
 	#define VRCSQUISH_NONE -1000000.0
@@ -130,11 +164,6 @@ _SquishCam3 ("Camera3", Vector) = (0, 0, 0, 0)
 	float4 VRCSquishCam(int region)
 	{
 		return region == 0 ? _SquishCam0 : region == 1 ? _SquishCam1 : region == 2 ? _SquishCam2 : _SquishCam3;
-	}
-
-	bool VRCSquishIsRegionCamera(int region)
-	{
-		return unity_OrthoParams.w > 0.5 && abs(_ProjectionParams.y - (0.0011 + 0.0001 * region)) < 0.00002;
 	}
 
 	float VRCSquishSceneDistance(int region, float4 cam, float2 xy)
@@ -379,6 +408,9 @@ _SquishCam3 ("Camera3", Vector) = (0, 0, 0, 0)
 
 #T#VRCSquishPostClip
 //ifex _SquishEnabled==0
+#ifdef VRCSQUISH_SELF_HIDE
+	if (VRCSquishHideSelf()) o.pos = asfloat(0x7fc00000).xxxx;
+#endif
 #if defined(POI_SQUISH_ACTIVE) && !defined(POI_TESSELLATED)
 	if (vrcSquishHide) o.pos = asfloat(0x7fc00000).xxxx;
 #endif

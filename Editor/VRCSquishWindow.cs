@@ -444,12 +444,14 @@ namespace VRCSquish.Editor
             int mask = InternalEditorUtility.LayerMaskToConcatenatedLayersMask(setup.layers);
             mask = EditorGUILayout.MaskField("Layers", mask, InternalEditorUtility.layers);
             int resolution = EditorGUILayout.IntPopup("Resolution", setup.resolution, ResolutionNames, Resolutions);
+            bool hideSelf = EditorGUILayout.Toggle("Hide Self", setup.hideSelf);
 
             if (EditorGUI.EndChangeCheck())
             {
                 Undo.RecordObject(setup, "Bake Settings");
                 setup.layers = InternalEditorUtility.ConcatenatedLayersMaskToLayerMask(mask);
                 setup.resolution = resolution;
+                setup.hideSelf = hideSelf;
                 MarkDirty(setup);
             }
 

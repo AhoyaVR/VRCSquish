@@ -17,6 +17,7 @@ namespace VRCSquish.Editor
         const string SkeletonPath = ModularShaderFolder + "/VRLM_VRCSquishTessellationSkeleton.asset";
         const string ShaderPathPrefix = ".poiyomi/User Modules/";
         const string Suffix = " Squish";
+        const string LiteSuffix = " Squish Lite";
 
         const string VertFragSkeleton = "VRLM_PoiVertFragSkeleton";
         const string HullDomainSkeleton = "VRLM_PoiVertHullDomainFragSkeleton";
@@ -26,9 +27,9 @@ namespace VRCSquish.Editor
         const string SquishHullDomainProgram9 = "VRCSquishHullDomainProgram";
         const string SquishHullDomainProgram10 = "VRCSquishHullDomainProgram10";
 
-        public const int ModuleVersion = 14;
+        public const int ModuleVersion = 15;
 
-        public static void Install(List<ModularShader> sources)
+        public static void Install(List<ModularShader> sources, bool lite = false)
         {
             ShaderModule module = GetOrCreateModule();
 
@@ -43,7 +44,7 @@ namespace VRCSquish.Editor
                 {
                     ModularShader src = sources[i];
                     EditorUtility.DisplayProgressBar("VRC Squish", src.ShaderPath, (float)i / sources.Count);
-                    ShaderGenerator.GenerateShader(GeneratedShaderFolder, GetOrCreateCopy(src, module));
+                    ShaderGenerator.GenerateShader(GeneratedShaderFolder, GetOrCreateCopy(src, module, lite));
                 }
             }
             finally
@@ -55,10 +56,12 @@ namespace VRCSquish.Editor
             AssetDatabase.Refresh();
         }
 
-        public static bool IsSquishShader(Shader s) => s != null && s.name.StartsWith(ShaderPathPrefix) && s.name.EndsWith(Suffix);
+        public static bool IsSquishShader(Shader s) => s != null && s.name.StartsWith(ShaderPathPrefix) && (s.name.EndsWith(Suffix) || s.name.EndsWith(LiteSuffix));
 
-        public static Shader FindSquishVariant(string sourceShaderName) =>
-            Shader.Find(ShaderPathPrefix + Path.GetFileName(sourceShaderName) + Suffix);
+        public static bool IsLiteShader(Shader s) => IsSquishShader(s) && s.name.EndsWith(LiteSuffix);
+
+        public static Shader FindSquishVariant(string sourceShaderName, bool lite = false) =>
+            Shader.Find(ShaderPathPrefix + Path.GetFileName(sourceShaderName) + (lite ? LiteSuffix : Suffix));
 
         public static bool IsUpToDate(Shader s)
         {
@@ -71,7 +74,8 @@ namespace VRCSquish.Editor
         {
             if (!IsSquishShader(s)) return s.name;
 
-            string bare = s.name.Substring(ShaderPathPrefix.Length, s.name.Length - ShaderPathPrefix.Length - Suffix.Length);
+            string suffix = IsLiteShader(s) ? LiteSuffix : Suffix;
+            string bare = s.name.Substring(ShaderPathPrefix.Length, s.name.Length - ShaderPathPrefix.Length - suffix.Length);
             return ".poiyomi/" + bare;
         }
 
@@ -132,16 +136,17 @@ namespace VRCSquish.Editor
             return new ModuleTemplate { Template = asset, Keywords = keywords.ToList(), NeedsVariant = false, Queue = 100 };
         }
 
-        static ModularShader GetOrCreateCopy(ModularShader src, ShaderModule module)
+        static ModularShader GetOrCreateCopy(ModularShader src, ShaderModule module, bool lite)
         {
-            string path = $"{ModularShaderFolder}/{src.Id.Replace(" ", "")}{Suffix.Trim()}.asset";
+            string suffix = lite ? LiteSuffix : Suffix;
+            string path = $"{ModularShaderFolder}/{src.Id.Replace(" ", "")}{suffix.Replace(" ", "")}.asset";
             ModularShader copy = AssetDatabase.LoadAssetAtPath<ModularShader>(path);
             bool isNew = copy == null;
 
             if (isNew) copy = ScriptableObject.CreateInstance<ModularShader>();
 
-            copy.Id = src.Id + "Squish";
-            copy.Name = (string.IsNullOrEmpty(src.Name) ? src.Id : src.Name) + Suffix;
+            copy.Id = src.Id + suffix.Replace(" ", "");
+            copy.Name = (string.IsNullOrEmpty(src.Name) ? src.Id : src.Name) + suffix;
             copy.Version = src.Version;
             copy.Author = src.Author;
             copy.Description = src.Description;
@@ -150,9 +155,9 @@ namespace VRCSquish.Editor
             copy.ShaderTemplate = src.ShaderTemplate;
             copy.CustomEditor = src.CustomEditor;
             copy.Properties = src.Properties.ToList();
-            copy.ShaderPath = ShaderPathPrefix + Path.GetFileName(src.ShaderPath) + Suffix;
+            copy.ShaderPath = ShaderPathPrefix + Path.GetFileName(src.ShaderPath) + suffix;
 
-            ShaderModule skeleton = GetOrCreateTessellationSkeleton();
+            ShaderModule skeleton = lite ? null : GetOrCreateTessellationSkeleton();
             bool tessellated = false;
             copy.BaseModules = new List<ShaderModule>();
 
@@ -171,7 +176,7 @@ namespace VRCSquish.Editor
 
             copy.BaseModules.Add(module);
 
-            if (!tessellated) Debug.LogWarning($"[VRC Squish] {src.ShaderPath}: no tessellation");
+            if (!lite && !tessellated) Debug.LogWarning($"[VRC Squish] {src.ShaderPath}: no tessellation");
 
             copy.AdditionalModules = (src.AdditionalModules ?? new List<ShaderModule>()).ToList();
             copy.LockBaseModules = src.LockBaseModules;

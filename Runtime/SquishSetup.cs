@@ -27,6 +27,12 @@ namespace VRCSquish
 
         public int resolution = 256;
 
+        public bool hideSelf = true;
+
+        public int id;
+
+        public List<Renderer> selfRenderers = new List<Renderer>();
+
         public string output = "Assets/VRCSquish/Generated";
 
         public List<Swap> swaps = new List<Swap>();
