@@ -65,7 +65,7 @@ namespace VRCSquish.Editor
                 .Distinct().ToList();
         }
 
-        static Shader OriginalShader(Material m) => Thry.ShaderOptimizer.IsMaterialLocked(m) ? Thry.ShaderOptimizer.GetOriginalShader(m) : m.shader;
+        static Shader OriginalShader(Material m) => PoiLock.IsMaterialLocked(m) ? PoiLock.GetOriginalShader(m) : m.shader;
 
         static List<ModularShader> Sources(List<Material> materials)
         {
@@ -317,14 +317,14 @@ namespace VRCSquish.Editor
 
         static void PrepareMaterials(List<Material> materials, Dictionary<Material, Shader> shaderFor, List<string> messages, bool lite)
         {
-            List<Material> locked = materials.Where(Thry.ShaderOptimizer.IsMaterialLocked).ToList();
+            List<Material> locked = materials.Where(PoiLock.IsMaterialLocked).ToList();
             List<string> notPoiyomi = new List<string>();
 
             Dictionary<Material, string> sourceName = new Dictionary<Material, string>();
 
             foreach (Material m in materials)
             {
-                Shader shader = locked.Contains(m) ? Thry.ShaderOptimizer.GetOriginalShader(m) : m.shader;
+                Shader shader = locked.Contains(m) ? PoiLock.GetOriginalShader(m) : m.shader;
                 if (shader == null)
                 {
                     messages.Add($"{m.name}: original shader missing");
@@ -357,9 +357,9 @@ namespace VRCSquish.Editor
 
             if (locked.Count > 0)
             {
-                Thry.ShaderOptimizer.SetLockedForAllMaterials(locked, 0, showProgressbar: true, allowCancel: false);
+                PoiLock.SetLockedForAllMaterials(locked, 0);
 
-                foreach (Material m in locked.Where(Thry.ShaderOptimizer.IsMaterialLocked))
+                foreach (Material m in locked.Where(PoiLock.IsMaterialLocked))
                 {
                     messages.Add($"{m.name}: unlock failed");
                     sourceName.Remove(m);
@@ -421,7 +421,7 @@ namespace VRCSquish.Editor
                 mat.SetFloat("_SquishId", setup.id);
                 mat.SetFloat("_SquishSelf", 1);
                 if (string.IsNullOrEmpty(mat.GetTag("thry_rename_suffix", false, "")))
-                    mat.SetOverrideTag("thry_rename_suffix", Thry.ShaderOptimizer.GetRenamedPropertySuffix(mat));
+                    mat.SetOverrideTag("thry_rename_suffix", PoiLock.GetRenamedPropertySuffix(mat));
                 mat.SetFloat("_SquishOn", 0);
                 EditorUtility.SetDirty(mat);
             }
@@ -477,9 +477,9 @@ namespace VRCSquish.Editor
         static void RevertSelfHiding(SquishSetup setup, List<string> messages)
         {
             List<Material> lite = LiteMaterials(setup);
-            List<Material> locked = lite.Where(Thry.ShaderOptimizer.IsMaterialLocked).ToList();
+            List<Material> locked = lite.Where(PoiLock.IsMaterialLocked).ToList();
 
-            if (locked.Count > 0) Thry.ShaderOptimizer.SetLockedForAllMaterials(locked, 0, showProgressbar: true, allowCancel: false);
+            if (locked.Count > 0) PoiLock.SetLockedForAllMaterials(locked, 0);
 
             foreach (Material m in lite) RevertMaterial(m, messages);
 
@@ -790,7 +790,7 @@ namespace VRCSquish.Editor
 
                 IEnumerable<string> suffixes = r.sharedMaterials
                     .Where(m => m != null && m.HasProperty("_SquishData") && m.GetTexture("_SquishData") != null)
-                    .Select(Thry.ShaderOptimizer.GetRenamedPropertySuffix)
+                    .Select(PoiLock.GetRenamedPropertySuffix)
                     .Distinct();
 
                 foreach (string suffix in suffixes)
@@ -842,10 +842,10 @@ namespace VRCSquish.Editor
                 .Where(m => m != null)
                 .Distinct().ToList();
 
-            List<Material> locked = touched.Where(m => Thry.ShaderOptimizer.IsMaterialLocked(m)
-                && VRCSquishShaderInstaller.IsSquishShader(Thry.ShaderOptimizer.GetOriginalShader(m))).ToList();
+            List<Material> locked = touched.Where(m => PoiLock.IsMaterialLocked(m)
+                && VRCSquishShaderInstaller.IsSquishShader(PoiLock.GetOriginalShader(m))).ToList();
 
-            if (locked.Count > 0) Thry.ShaderOptimizer.SetLockedForAllMaterials(locked, 0, showProgressbar: true, allowCancel: false);
+            if (locked.Count > 0) PoiLock.SetLockedForAllMaterials(locked, 0);
 
             foreach (SquishSetup.Swap swap in setup.swaps)
             {

@@ -135,18 +135,18 @@ namespace VRCSquish.Editor
         {
             bool ready = Reachable(Step.Config, setup);
             List<Material> mats = ready ? SquishBaker.SquishMaterials(setup) : new List<Material>();
-            bool locked = mats.Count > 0 && mats.All(Thry.ShaderOptimizer.IsMaterialLocked);
+            bool locked = mats.Count > 0 && mats.All(PoiLock.IsMaterialLocked);
 
             using (new EditorGUI.DisabledScope(!ready))
             {
                 if (!GUILayout.Button(locked ? "Unlock" : "Lock", GUILayout.Height(34))) return;
             }
 
-            List<Material> targets = mats.Where(m => Thry.ShaderOptimizer.IsMaterialLocked(m) == locked).ToList();
+            List<Material> targets = mats.Where(m => PoiLock.IsMaterialLocked(m) == locked).ToList();
 
-            Thry.ShaderOptimizer.SetLockedForAllMaterials(targets, locked ? 0 : 1, showProgressbar: true, allowCancel: false);
+            PoiLock.SetLockedForAllMaterials(targets, locked ? 0 : 1);
 
-            List<Material> failed = targets.Where(m => Thry.ShaderOptimizer.IsMaterialLocked(m) == locked).ToList();
+            List<Material> failed = targets.Where(m => PoiLock.IsMaterialLocked(m) == locked).ToList();
 
             _messages = failed.Select(m => $"{m.name}: {(locked ? "unlock" : "lock")} failed").ToList();
             GUIUtility.ExitGUI();
@@ -485,7 +485,7 @@ namespace VRCSquish.Editor
 
             if (mats.Count == 0) return;
 
-            using (new EditorGUI.DisabledScope(mats.Any(Thry.ShaderOptimizer.IsMaterialLocked)))
+            using (new EditorGUI.DisabledScope(mats.Any(PoiLock.IsMaterialLocked)))
                 ConfigProperties(mats);
 
             EditorGUILayout.Space();
@@ -572,8 +572,8 @@ namespace VRCSquish.Editor
                 r.GetPropertyBlock(_previewBlock);
                 _previewBlock.SetFloat(SquishOnId, 1);
                 foreach (Material m in r.sharedMaterials)
-                    if (m != null && Thry.ShaderOptimizer.IsMaterialLocked(m))
-                        _previewBlock.SetFloat($"_SquishOn_{Thry.ShaderOptimizer.GetRenamedPropertySuffix(m)}", 1);
+                    if (m != null && PoiLock.IsMaterialLocked(m))
+                        _previewBlock.SetFloat($"_SquishOn_{PoiLock.GetRenamedPropertySuffix(m)}", 1);
                 r.SetPropertyBlock(_previewBlock);
             }
         }
